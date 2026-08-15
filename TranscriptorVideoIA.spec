@@ -1,7 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import customtkinter
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('C:/Users/wingz/.gemini/antigravity-ide/scratch/whisper_transcriber/venv/Lib/site-packages/customtkinter/assets', 'customtkinter/assets')]
+_ctk_assets = os.path.join(os.path.dirname(customtkinter.__file__), 'assets')
+datas = [(_ctk_assets, 'customtkinter/assets')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('faster_whisper')

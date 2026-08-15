@@ -18,15 +18,38 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 def create_batch_file() -> Path:
     """
     Escribe ejecutar_app.bat en la raiz del proyecto.
-    Usa 'start "" /B pythonw.exe main.py' para que la ventana CMD
-    se cierre tan pronto como la GUI abre sin errores.
+
+    Usa %~dp0 (el directorio del propio .bat) en vez de una ruta absoluta
+    para que el archivo sea portable y funcione en cualquier maquina.
+    Crea el venv automaticamente si no existe y lanza la GUI con pythonw.exe.
     """
     batch_path = PROJECT_ROOT / "ejecutar_app.bat"
     lines = [
         "@echo off",
-        f'cd /d "{PROJECT_ROOT}"',
+        "setlocal",
+        'set "APP_DIR=%~dp0"',
+        'cd /d "%APP_DIR%"',
+        'if not exist "venv\\Scripts\\python.exe" (',
+        '    echo [INFO] Creando entorno virtual "venv"...',
+        "    where py >nul 2>nul",
+        "    if %errorlevel%==0 (",
+        "        py -m venv venv",
+        "    ) else (",
+        "        python -m venv venv",
+        "    )",
+        '    if not exist "venv\\Scripts\\python.exe" (',
+        "        echo [ERROR] No se pudo crear el entorno virtual.",
+        "        echo         Verifica que Python este instalado y en el PATH.",
+        "        pause",
+        "        exit /b 1",
+        "    )",
+        "    echo [INFO] Instalando dependencias desde requirements.txt...",
+        '    "venv\\Scripts\\python.exe" -m pip install --upgrade pip',
+        '    "venv\\Scripts\\python.exe" -m pip install -r requirements.txt',
+        ")",
         "call venv\\Scripts\\activate.bat",
         'start "" /B venv\\Scripts\\pythonw.exe main.py',
+        "endlocal",
     ]
     batch_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
     print(f"[OK] Batch creado : {batch_path}")

@@ -1,5 +1,6 @@
 import os
 import logging
+import queue
 from typing import List, Dict, Any
 from faster_whisper import WhisperModel
 
@@ -153,52 +154,6 @@ class WhisperTranscriber:
             logger.error(error_msg)
             if queue:
                 queue.put({"type": "error", "message": error_msg, "level": "error"})
-            raise TranscriptionProcessError(error_msg) from e
-        """
-        Transcribe un archivo de audio o video.
-        
-        Args:
-            file_path (str): Ruta absoluta o relativa al archivo a transcribir.
-            
-        Returns:
-            List[Dict[str, Any]]: Lista de segmentos, cada uno con start, end y text.
-            
-        Raises:
-            FileNotFoundError: Si el archivo no existe.
-            FileNotSupportedError: Si la extensión del archivo no está soportada.
-            TranscriptionProcessError: Si ocurre un error al procesar el archivo.
-        """
-        _, ext = os.path.splitext(file_path)
-        if ext.lower() not in SUPPORTED_EXTENSIONS:
-            error_msg = f"Extensión de archivo no soportada: {ext}. Formatos soportados: {', '.join(SUPPORTED_EXTENSIONS)}"
-            logger.error(error_msg)
-            raise FileNotSupportedError(error_msg)
-
-        if not os.path.exists(file_path):
-            error_msg = f"El archivo no existe: {file_path}"
-            logger.error(error_msg)
-            raise FileNotFoundError(error_msg)
-            
-        logger.info(f"Iniciando transcripción de: {file_path}")
-        try:
-            # transcribe devuelve un generador de segmentos y un objeto de información
-            segments, info = self.model.transcribe(file_path, beam_size=5)
-            
-            logger.info(f"Idioma detectado: {info.language} con probabilidad {info.language_probability:.2f}")
-            
-            results = []
-            for segment in segments:
-                results.append({
-                    "start": segment.start,
-                    "end": segment.end,
-                    "text": segment.text.strip()
-                })
-                
-            logger.info(f"Transcripción finalizada. Se procesaron {len(results)} segmentos.")
-            return results
-        except Exception as e:
-            error_msg = f"Ocurrió un error durante el procesamiento de transcripción: {str(e)}"
-            logger.error(error_msg)
             raise TranscriptionProcessError(error_msg) from e
 
 
