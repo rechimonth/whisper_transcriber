@@ -31,7 +31,25 @@
   SUPERIOR al modelo "base" local. Requiere API key gratuita. Es la mejor
   opción "cerebro terciarizado gratuito" para este hardware limitado.
 - OpenAI Whisper API: $0.006/min (no gratis, pero barato).
-- Cuando se implemente: modo "online" (Groq) con fallback a modo "local" sin internet.
+- Cuando se implemente: modo "online" (Groq) con fallback a local sin internet.
+
+## Estado de implementación de Groq (Opción B) — IMPLEMENTADO
+- `core/groq_transcriber.py`: `GroqTranscriber` usa el SDK `groq` con modelo
+  `whisper-large-v3-turbo`. Flujo: extrae audio a MP3 mono 16kHz (vía
+  `core/audio_utils.py`), trocea en fragmentos de ~10 min si supera 25 MB
+  (límite free tier), envía cada fragmento a la API y une los segmentos
+  ajustando los offsets de tiempo. Formato de salida idéntico al local.
+- `core/audio_utils.py`: utilidades de ffmpeg compartidas (extract_audio,
+  get_audio_duration, split_audio, cleanup_temp_files).
+- `ui/main_window.py`: selector de modo `CTkSegmentedButton` ("Local (CPU)" /
+  "Online (Groq)"). Si Groq no está disponible (sin key o sin paquete), solo
+  muestra "Local". El worker (`_transcribe_with_groq`) hace fallback automático
+  a local si Groq falla (sin internet, 429, key inválida).
+- `main.py`: carga `.env` (python-dotenv o parseo manual) antes de importar la UI.
+- `.env` (gitignored) contiene `GROQ_API_KEY=...`. `.env.example` es la plantilla.
+- Límites free tier Groq (verificados ago/2026): 2.000 req/día, 7.200 seg
+  audio/hora, 28.800 seg audio/día (~8h), 25 MB/archivo (free) / 100 MB (dev).
+  Sin tarjeta de crédito.
 
 ## Estructura del proyecto
 - `main.py` — entrada; configura logging (FileHandler app.log + StreamHandler) y

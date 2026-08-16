@@ -41,6 +41,35 @@ _bootstrap_streams()
 _configure_logging()
 logger = logging.getLogger(__name__)
 
+
+def _load_env():
+    """Carga variables de entorno desde .env (si existe) para que la API key de
+    Groq esté disponible. python-dotenv es opcional: si no está instalado, se
+    hace un parseo manual mínimo."""
+    env_path = os.path.join(APP_DIR, ".env")
+    if not os.path.exists(env_path):
+        return
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(env_path)
+        return
+    except ImportError:
+        pass
+    # Parseo manual de respaldo
+    try:
+        with open(env_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                os.environ.setdefault(key.strip(), val.strip())
+    except Exception:
+        pass
+
+
+_load_env()
+
 from ui.main_window import MainWindow
 
 

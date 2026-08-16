@@ -19,3 +19,7 @@ test_output.srt
 
 # Log de ejecucion de la app
 app.log
+
+# Secretos: API keys (NUNCA subir al repositorio)
+.env
+.env.local

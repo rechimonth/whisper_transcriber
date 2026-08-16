@@ -19,6 +19,7 @@ except ImportError:
     DND_FILES = None
 
 from core.transcriber import WhisperTranscriber, export_to_txt, export_to_srt
+from core.groq_transcriber import GroqTranscriber, is_groq_available, GroqNotConfiguredError
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +74,10 @@ class MainWindow(_BaseWindow):
         self.selected_file_path = None
         self.transcription_results = None
         self.transcriber = None
+        self.groq_transcriber = None
         self.transcription_queue = queue.Queue()
         self.is_transcribing = False
+        self.transcription_mode = "local"  # "local" o "groq"
         # Captura de logs
         self._log_buffer = io.StringIO()
         self._original_stdout = sys.stdout
@@ -188,6 +191,29 @@ class MainWindow(_BaseWindow):
         )
         self.btn_transcribe.pack(fill="x", pady=(0, 5))
 
+        # 3b. SELECTOR DE MODO (Local vs Groq)
+        self.mode_frame = ctk.CTkFrame(self.control_frame, fg_color="transparent")
+        self.mode_frame.pack(fill="x", pady=(0, 5))
+        self.mode_label = ctk.CTkLabel(
+            self.mode_frame,
+            text="Motor:",
+            font=ctk.CTkFont(size=12),
+        )
+        self.mode_label.pack(side="left", padx=(0, 8))
+        groq_ok = is_groq_available()
+        self.mode_switch = ctk.CTkSegmentedButton(
+            self.mode_frame,
+            values=["Local (CPU)", "Online (Groq)"] if groq_ok else ["Local (CPU)"],
+            command=self._on_mode_change,
+        )
+        self.mode_switch.set("Local (CPU)")
+        self.mode_switch.pack(side="left", fill="x", expand=True)
+        if groq_ok:
+            logger.info("Modo Groq disponible (API key configurada y paquete groq instalado).")
+        else:
+            logger.info("Modo Groq no disponible: falta API key o el paquete groq. "
+                        "Modo local por defecto.")
+
         # 4. BARRA DE PROGRESO Y ESTADO
         self.progress_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.progress_frame.grid(row=3, column=0, padx=20, pady=4, sticky="ew")
@@ -251,6 +277,24 @@ class MainWindow(_BaseWindow):
             state="disabled",
         )
         self.btn_export_srt.pack(side="right", fill="x", expand=True, padx=(10, 0))
+
+    def _on_mode_change(self, choice: str):
+        """Cambia el motor de transcripción entre local y Groq."""
+        if choice == "Online (Groq)":
+            if not is_groq_available():
+                messagebox.showwarning(
+                    "Groq no disponible",
+                    "Falta la API key de Groq o el paquete 'groq'.\n"
+                    "Crea un archivo .env con GROQ_API_KEY=tu_key e instala "
+                    "el paquete con: pip install groq\n"
+                    "Se mantiene el modo Local.")
+                self.mode_switch.set("Local (CPU)")
+                return
+            self.transcription_mode = "groq"
+            logger.info("Motor seleccionado: Online (Groq).")
+        else:
+            self.transcription_mode = "local"
+            logger.info("Motor seleccionado: Local (CPU).")
 
     # -----------------------------------------------------------------------
     # Drag & Drop
@@ -335,10 +379,10 @@ class MainWindow(_BaseWindow):
 
     def _transcribe_worker(self, file_path: str):
         try:
-            if self.transcriber is None:
-                self.transcription_queue.put({"type": "status", "text": "Cargando modelo Whisper 'base' en CPU...", "level": "processing"})
-                self.transcriber = WhisperTranscriber(model_size="base", device="cpu", compute_type="int8")
-            results = self.transcriber.transcribe_file(file_path, queue=self.transcription_queue)
+            if self.transcription_mode == "groq":
+                results = self._transcribe_with_groq(file_path)
+            else:
+                results = self._transcribe_with_local(file_path)
             # Ensure a final done message
             self.transcription_queue.put({"type": "done", "results": results, "level": "ok"})
         except Exception as exc:
@@ -349,6 +393,33 @@ class MainWindow(_BaseWindow):
             except Exception:
                 pass
             self.transcription_queue.put({"type": "error", "message": str(exc), "level": "error"})
+
+    def _transcribe_with_local(self, file_path: str):
+        """Transcripción local con faster-whisper (CPU)."""
+        if self.transcriber is None:
+            self.transcription_queue.put({"type": "status", "text": "Cargando modelo Whisper 'base' en CPU...", "level": "processing"})
+            self.transcriber = WhisperTranscriber(model_size="base", device="cpu", compute_type="int8")
+        return self.transcriber.transcribe_file(file_path, queue=self.transcription_queue)
+
+    def _transcribe_with_groq(self, file_path: str):
+        """Transcripción online con Groq. Si falla (sin internet, key invalida,
+        limite 429), hace fallback automatico al modo local avisando al usuario."""
+        if self.groq_transcriber is None:
+            self.groq_transcriber = GroqTranscriber()
+        try:
+            return self.groq_transcriber.transcribe_file(file_path, queue=self.transcription_queue)
+        except Exception as exc:
+            logger.warning(f"Groq falló ({exc}); fallback a modo local.")
+            self.transcription_queue.put({
+                "type": "status",
+                "text": "Groq falló. Cambiando a modo local (CPU)...",
+                "level": "processing",
+            })
+            # Fallback al transcriptor local.
+            if self.transcriber is None:
+                self.transcription_queue.put({"type": "status", "text": "Cargando modelo Whisper 'base' en CPU...", "level": "processing"})
+                self.transcriber = WhisperTranscriber(model_size="base", device="cpu", compute_type="int8")
+            return self.transcriber.transcribe_file(file_path, queue=self.transcription_queue)
 
     def poll_queue(self):
         try:
