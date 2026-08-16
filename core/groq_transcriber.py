@@ -17,6 +17,7 @@ import os
 import logging
 import subprocess
 import tempfile
+import time
 from typing import List, Dict, Any, Optional
 
 from core.audio_utils import (
@@ -35,6 +36,10 @@ DEFAULT_MODEL = "whisper-large-v3-turbo"
 # Duración objetivo de cada fragmento (segundos). 10 min de MP3 mono 16kHz
 # ocupa ~9 MB, con margen suficiente por debajo de 25 MB.
 CHUNK_SECONDS = 600
+# Número máximo de reintentos ante error 429 (rate limit) de Groq.
+MAX_RETRIES = 5
+# Pausa base (segundos) para backoff exponencial al recibir 429.
+RETRY_BASE_DELAY = 30
 
 
 class GroqTranscriberError(Exception):
@@ -102,18 +107,20 @@ class GroqTranscriber:
             chunks = self._prepare_chunks(audio_path, duration, temp_files)
 
             results: List[Dict[str, Any]] = []
-            for i, (chunk_path, offset) in enumerate(chunks):
+            for i, (chunk_path, offset) in enumerate(chunks, start=1):
                 if queue:
                     queue.put({
                         "type": "status",
-                        "text": f"Transcribiendo fragmento {i+1}/{len(chunks)}...",
+                        "text": f"Transcribiendo fragmento {i}/{len(chunks)}...",
                         "level": "processing",
                     })
-                logger.info(f"Fragmento {i+1}/{len(chunks)} (offset {offset:.1f}s)")
-                segs = self._transcribe_one(chunk_path, offset, language)
+                logger.info(f"Fragmento {i}/{len(chunks)} (offset {offset:.1f}s)")
+                segs = self._transcribe_one(
+                    chunk_path, offset, language,
+                    queue=queue, chunk_index=i, total_chunks=len(chunks))
                 results.extend(segs)
                 if queue:
-                    progress = min((i + 1) / len(chunks), 1.0)
+                    progress = min(i / len(chunks), 1.0)
                     queue.put({"type": "segment",
                                "text": segs[-1]["text"] if segs else "",
                                "progress": progress})
@@ -140,9 +147,15 @@ class GroqTranscriber:
         return chunks
 
     def _transcribe_one(self, chunk_path: str, offset: float,
-                        language: Optional[str]) -> List[Dict[str, Any]]:
+                        language: Optional[str], queue=None,
+                        chunk_index: int = 0, total_chunks: int = 1) -> List[Dict[str, Any]]:
         """Envía un fragmento a la API de Groq y devuelve sus segmentos con
-        timestamps ajustados al offset del corte."""
+        timestamps ajustados al offset del corte.
+
+        Reintenta con backoff exponencial ante error 429 (rate limit), que es
+        esperable en el tier gratuito con audios largos (límite ~2h audio/hora).
+        El header retry-after de Groq indica cuándo reintentar; se respeta.
+        """
         with open(chunk_path, "rb") as f:
             kwargs = {
                 "model": self.model,
@@ -151,12 +164,36 @@ class GroqTranscriber:
             }
             if language:
                 kwargs["language"] = language
-            try:
-                resp = self.client.audio.transcriptions.create(**kwargs)
-            except Exception as e:
-                msg = f"Error de la API de Groq: {e}"
-                logger.error(msg, exc_info=True)
-                raise GroqTranscriberError(msg) from e
+
+            last_exc = None
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    resp = self.client.audio.transcriptions.create(**kwargs)
+                    break  # éxito
+                except Exception as e:
+                    last_exc = e
+                    retry_after = self._extract_retry_after(e)
+                    is_429 = self._is_rate_limit(e)
+                    if not is_429 or attempt == MAX_RETRIES:
+                        # Error no recuperable o reintentos agotados.
+                        msg = (f"Error de la API de Groq en fragmento "
+                               f"{chunk_index}/{total_chunks}: {e}")
+                        logger.error(msg, exc_info=True)
+                        raise GroqTranscriberError(msg) from e
+                    # 429 recuperable: esperar y reintentar.
+                    delay = retry_after if retry_after else (
+                        RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+                    logger.warning(
+                        f"Rate limit (429) en fragmento {chunk_index}/{total_chunks}. "
+                        f"Esperando {delay}s antes del reintento {attempt+1}/{MAX_RETRIES}.")
+                    if queue:
+                        queue.put({
+                            "type": "status",
+                            "text": (f"Límite de tasa alcanzado. Esperando "
+                                     f"{int(delay)}s (reintento {attempt+1}/{MAX_RETRIES})..."),
+                            "level": "processing",
+                        })
+                    time.sleep(delay)
 
         segments = []
         # response_format verbose_json incluye "segments" con start/end/text.
@@ -174,6 +211,34 @@ class GroqTranscriber:
             if text:
                 segments.append({"start": offset, "end": offset, "text": text})
         return segments
+
+    @staticmethod
+    def _is_rate_limit(exc) -> bool:
+        """True si la excepción es un error 429 (rate limit) de Groq."""
+        status = getattr(exc, "status_code", None)
+        if status == 429:
+            return True
+        # El SDK groq puede envolver el error; buscar en attributes/response.
+        resp = getattr(exc, "response", None)
+        if resp is not None and getattr(resp, "status_code", None) == 429:
+            return True
+        msg = str(exc).lower()
+        return "429" in msg or "rate limit" in msg
+
+    @staticmethod
+    def _extract_retry_after(exc) -> Optional[float]:
+        """Extrae el valor de retry-after (segundos) de la cabecera de Groq."""
+        resp = getattr(exc, "response", None)
+        if resp is None:
+            return None
+        headers = getattr(resp, "headers", None) or {}
+        ra = headers.get("retry-after") or headers.get("Retry-After")
+        if ra:
+            try:
+                return float(ra)
+            except (TypeError, ValueError):
+                pass
+        return None
 
 
 def is_groq_available() -> bool:
