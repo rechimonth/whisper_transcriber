@@ -16,3 +16,6 @@ dist/
 test_audio.wav
 test_output.txt
 test_output.srt
+
+# Log de ejecucion de la app
+app.log

@@ -39,6 +39,25 @@ else:
         """Fallback sin Drag & Drop."""
         pass
 
+class _BufferLogHandler(logging.Handler):
+    """Handler de logging thread-safe que vuelca los registros a un buffer de
+    texto (io.StringIO) para mostrarlos en la ventana de logs de la GUI.
+    logging ya serializa emit() con un lock por handler, por lo que es seguro
+    usarlo desde el hilo worker de transcripcion."""
+
+    def __init__(self, buffer):
+        super().__init__()
+        self._buffer = buffer
+
+    def emit(self, record):
+        try:
+            msg = self.format(record) + "\n"
+            self._buffer.write(msg)
+        except Exception:
+            # Nunca dejar que un fallo de logging rompa el hilo worker.
+            self.handleError(record)
+
+
 class MainWindow(_BaseWindow):
     """Ventana principal con observabilidad y captura de logs."""
 
@@ -62,6 +81,12 @@ class MainWindow(_BaseWindow):
         self._original_stderr = sys.stderr
         sys.stdout = self._create_stream_proxy(self._original_stdout)
         sys.stderr = self._create_stream_proxy(self._original_stderr)
+        # Handler de logging thread-safe que captura los registros (incluidos
+        # los de faster_whisper) en el buffer de la ventana de logs.
+        self._log_handler = _BufferLogHandler(self._log_buffer)
+        self._log_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s"))
+        logging.getLogger().addHandler(self._log_handler)
         # UI
         self._create_widgets()
         if _DND_AVAILABLE:
@@ -317,7 +342,12 @@ class MainWindow(_BaseWindow):
             # Ensure a final done message
             self.transcription_queue.put({"type": "done", "results": results, "level": "ok"})
         except Exception as exc:
-            logger.error(f"Error en worker de transcripción: {exc}")
+            # Loguear con traceback completo para app.log (diagnostico) y enviar
+            # el mensaje al usuario por la cola. Si logging falla, no rompe el hilo.
+            try:
+                logger.error("Error en worker de transcripción", exc_info=True)
+            except Exception:
+                pass
             self.transcription_queue.put({"type": "error", "message": str(exc), "level": "error"})
 
     def poll_queue(self):
@@ -386,13 +416,25 @@ class MainWindow(_BaseWindow):
     # Log capture utilities
     # -----------------------------------------------------------------------
     def _create_stream_proxy(self, original):
-        """Proxy that writes to both original stream and internal buffer."""
+        """Proxy that writes to both original stream and internal buffer.
+        Null-safe: bajo pythonw.exe los streams originales pueden ser None."""
         class StreamProxy:
             def write(self_inner, data):
-                self._log_buffer.write(data)
-                original.write(data)
+                try:
+                    self._log_buffer.write(data)
+                except Exception:
+                    pass
+                if original is not None:
+                    try:
+                        original.write(data)
+                    except Exception:
+                        pass
             def flush(self_inner):
-                original.flush()
+                if original is not None:
+                    try:
+                        original.flush()
+                    except Exception:
+                        pass
         return StreamProxy()
 
     def _show_log_window(self):

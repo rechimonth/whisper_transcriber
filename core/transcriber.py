@@ -4,8 +4,7 @@ import queue
 from typing import List, Dict, Any
 from faster_whisper import WhisperModel
 
-# Configuración básica de logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# La configuración de logging la centraliza main.py; aquí solo obtenemos el logger.
 logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.mp3', '.wav'}
