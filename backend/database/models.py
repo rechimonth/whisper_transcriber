@@ -59,3 +59,16 @@ class Transaction(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="transactions")
+
+
+class TokenBlocklist(Base):
+    """JTIs revocados via POST /auth/logout (con su expiracion original)."""
+
+    __tablename__ = "token_blocklist"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    jti: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

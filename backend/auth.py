@@ -12,8 +12,9 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordRequestForm
 from jose import ExpiredSignatureError, JWTError, jwt
 from passlib.context import CryptContext
@@ -21,7 +22,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.database.database import get_db
-from backend.database.models import CreditWallet, User
+from backend.database.models import CreditWallet, TokenBlocklist, User
+from backend.rate_limit import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 bearer = HTTPBearer(auto_error=False)
@@ -85,10 +87,34 @@ def verify_password(password: str, hashed: str) -> bool:
 def create_access_token(user_id: int, email: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
     return jwt.encode(
-        {"sub": str(user_id), "email": email, "exp": expire},
+        {"sub": str(user_id), "email": email, "jti": uuid4().hex, "exp": expire},
         JWT_SECRET_KEY,
         algorithm=JWT_ALGORITHM,
     )
+
+
+def _decode_token(token: str) -> dict:
+    try:
+        return jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+    except ExpiredSignatureError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="El token ha expirado. Inicia sesion de nuevo.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except JWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token de acceso invalido.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
+def _purge_expired_blocklist(db: Session) -> None:
+    db.query(TokenBlocklist).filter(
+        TokenBlocklist.expires_at < datetime.now(timezone.utc)
+    ).delete()
+    db.commit()
 
 
 def get_current_user(
@@ -103,22 +129,22 @@ def get_current_user(
         )
 
     try:
-        payload = jwt.decode(
-            credentials.credentials, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM]
-        )
+        payload = _decode_token(credentials.credentials)
         user_id = int(payload.get("sub", ""))
-    except ExpiredSignatureError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="El token ha expirado. Inicia sesion de nuevo.",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
-    except (JWTError, ValueError, TypeError) as exc:
+    except (ValueError, TypeError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token de acceso invalido.",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+
+    jti = payload.get("jti")
+    if jti and db.query(TokenBlocklist).filter(TokenBlocklist.jti == jti).first():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="La sesion fue cerrada. Inicia sesion de nuevo.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     user = db.get(User, user_id)
     if user is None:
@@ -139,7 +165,12 @@ def current_user_dependency(
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> TokenResponse:
+@limiter.limit("3/minute")
+def register(
+    request: Request,
+    payload: RegisterRequest,
+    db: Session = Depends(get_db),
+) -> TokenResponse:
     email = _validate_email(payload.email)
 
     if db.query(User).filter(User.email == email).first() is not None:
@@ -163,7 +194,9 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> TokenRe
 
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("5/minute")
 def login(
+    request: Request,
     form: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ) -> TokenResponse:
@@ -188,3 +221,45 @@ def me(user: AuthenticatedUser = Depends(get_current_user)) -> dict:
         "user_id": user.user_id,
         "email": user.email,
     }
+
+
+@router.post("/logout")
+def logout(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    db: Session = Depends(get_db),
+) -> dict:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Se requiere un Bearer token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    payload = _decode_token(credentials.credentials)
+    jti = payload.get("jti")
+    if not jti:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Este token no es revocable. Expirara por si solo.",
+        )
+
+    _purge_expired_blocklist(db)
+
+    if db.query(TokenBlocklist).filter(TokenBlocklist.jti == jti).first():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="La sesion ya fue cerrada.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        expires_at = datetime.fromtimestamp(float(payload["exp"]), tz=timezone.utc)
+    except (KeyError, ValueError, TypeError, OSError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El token no tiene expiracion valida.",
+        ) from exc
+
+    db.add(TokenBlocklist(jti=jti, expires_at=expires_at))
+    db.commit()
+    return {"logged_out": True}

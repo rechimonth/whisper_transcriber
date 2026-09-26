@@ -9,3 +9,4 @@ psycopg2-binary>=2.9,<3
 alembic>=1.13,<2
 passlib[argon2]>=1.7.4,<2
 python-jose[cryptography]>=3.3,<4
+slowapi>=0.1.9,<1

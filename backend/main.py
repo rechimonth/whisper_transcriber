@@ -10,12 +10,15 @@ from dotenv import load_dotenv
 # modulos inicializan stores y clientes leyendo variables de entorno.
 load_dotenv(Path(__file__).with_name(".env"), override=False)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 
 from backend.auth import router as auth_router
 from backend.payments import router as payments_router
 from backend.proxy_groq import router as proxy_router
+from backend.rate_limit import limiter
 from backend.webhooks import router as webhooks_router
 
 app = FastAPI(
@@ -23,6 +26,18 @@ app = FastAPI(
     version="1.0.0",
     description="Proxy seguro Groq + creditos + Mercado Pago.",
 )
+
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": "Demasiadas peticiones. Espera un momento e intentalo de nuevo."
+        },
+    )
 
 app.add_middleware(
     CORSMiddleware,
