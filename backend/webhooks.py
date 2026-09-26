@@ -154,6 +154,25 @@ async def mercadopago_webhook(
             "reason": "package_id desconocido",
         }
 
+    expected_currency = os.getenv("MP_CURRENCY_ID", "ARS").upper()
+    currency = str(payment.get("currency_id", "")).upper()
+    raw_amount = payment.get("transaction_amount")
+    try:
+        transaction_amount = float(raw_amount)
+    except (TypeError, ValueError):
+        transaction_amount = -1.0
+
+    if (
+        transaction_amount < 0
+        or abs(transaction_amount - package.price_ars) > 0.01
+        or (currency and currency != expected_currency)
+    ):
+        return {
+            "received": True,
+            "processed": False,
+            "reason": "importe o moneda del pago no coincide con el paquete",
+        }
+
     applied, balance = credit_store.apply_payment_once(
         payment_id=payment_id,
         user_id=user_id,
