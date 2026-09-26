@@ -234,7 +234,7 @@ def apply_payment_once_db(
 
 
 def debit_for_usage_db(
-    db: Session, *, user_id: int, credits: int, checkpoint: str = ""
+    db: Session, *, user_id: int, credits: int
 ) -> int:
     """Descuenta creditos por una transcripcion de forma atomica.
 

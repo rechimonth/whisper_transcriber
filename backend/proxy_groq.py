@@ -7,6 +7,7 @@ atomico (wallet + registro 'usage' en un unico commit).
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -29,14 +30,30 @@ from core.groq_transcriber import (
     GroqTranscriberError,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["transcription"])
 
 SUPPORTED_EXTENSIONS = {
     ".mp4", ".mkv", ".avi", ".mov", ".mp3", ".wav", ".m4a"
 }
-MAX_UPLOAD_BYTES = int(
-    os.getenv("BACKEND_MAX_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024))
-)
+
+
+def _env_max_upload_bytes() -> int:
+    raw = os.getenv("BACKEND_MAX_UPLOAD_BYTES", "")
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            logger.warning(
+                "BACKEND_MAX_UPLOAD_BYTES invalido (%r); usando 2 GiB.", raw
+            )
+    return 2 * 1024 * 1024 * 1024
+
+
+MAX_UPLOAD_BYTES = _env_max_upload_bytes()
 SERVER_TMP_DIR = Path(
     os.getenv("BACKEND_TMP_DIR", tempfile.gettempdir())
 ) / "transcriptorvideoia"
@@ -123,12 +140,13 @@ async def transcribe(
             )
 
         required = credits_for_duration(duration)
-        if get_balance_db(db, user.user_id) < required:
+        balance = get_balance_db(db, user.user_id)
+        if balance < required:
             raise HTTPException(
                 status_code=402,
                 detail=(
                     f"Saldo insuficiente: requiere {required} y dispone de "
-                    f"{get_balance_db(db, user.user_id)}."
+                    f"{balance}."
                 ),
             )
 
@@ -159,11 +177,17 @@ async def transcribe(
     except HTTPException:
         raise
     except GroqTranscriberError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        logger.warning("Fallo de Groq para user_id=%s: %s", user.user_id, exc)
+        raise HTTPException(
+            status_code=502,
+            detail="El servicio de transcripcion no esta disponible. "
+            "Intentalo de nuevo mas tarde.",
+        ) from exc
     except Exception as exc:
+        logger.exception("Error inesperado del proxy de transcripcion")
         raise HTTPException(
             status_code=500,
-            detail=f"Error inesperado del proxy de transcripcion: {exc}",
+            detail="Error interno del servidor de transcripcion.",
         ) from exc
     finally:
         try:

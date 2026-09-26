@@ -1,7 +1,6 @@
 """Entorno de migraciones Alembic: lee DATABASE_URL desde backend/.env."""
 from __future__ import annotations
 
-import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path

@@ -635,6 +635,9 @@ class MainWindow(_BaseWindow):
         try:
             while True:
                 msg = self.transcription_queue.get_nowait()
+                if not isinstance(msg, dict):
+                    logger.warning("Mensaje inesperado en la cola: %r", msg)
+                    continue
                 msg_type = msg.get("type")
 
                 if msg_type == "auth_ok":
@@ -644,9 +647,11 @@ class MainWindow(_BaseWindow):
                         text=f"Sesión activa: {msg['user'].get('email', msg['user'].get('user_id', 'usuario'))}",
                         text_color="#2ecc71",
                     )
+                    self.password_entry.delete(0, "end")
                     self.login_button.configure(state="normal")
                     self.register_button.configure(state="normal")
                 elif msg_type == "auth_error":
+                    self.password_entry.delete(0, "end")
                     self.login_button.configure(state="normal")
                     self.register_button.configure(state="normal")
                     self.account_status.configure(

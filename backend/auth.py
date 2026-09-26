@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -27,7 +28,16 @@ bearer = HTTPBearer(auto_error=False)
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-key-cambiar-en-produccion").strip()
+logger = logging.getLogger(__name__)
+
+_DEFAULT_JWT_SECRET = "dev-secret-key-cambiar-en-produccion"
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", _DEFAULT_JWT_SECRET).strip()
+if JWT_SECRET_KEY == _DEFAULT_JWT_SECRET:
+    logger.warning(
+        "JWT_SECRET_KEY no configurado: usando secreto de desarrollo. "
+        "Cualquiera con el codigo fuente puede falsificar tokens. "
+        "Define JWT_SECRET_KEY antes de exponer el backend."
+    )
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256").strip()
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "43200"))
 
