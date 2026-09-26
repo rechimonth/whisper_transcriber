@@ -23,3 +23,9 @@ app.log
 # Secretos: API keys (NUNCA subir al repositorio)
 .env
 .env.local
+backend/.env
+
+# Base de datos local de desarrollo (SQLite fallback)
+*.db
+*.sqlite
+*.sqlite3

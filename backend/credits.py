@@ -1,7 +1,9 @@
 """Saldo de creditos y operaciones atomicas.
 
-El almacenamiento es in-memory para MVP/local. La interfaz esta aislada para
-poder reemplazarse por PostgreSQL/Supabase sin cambiar los endpoints.
+El almacenamiento principal es PostgreSQL (modelos ``CreditWallet`` y
+``Transaction``). ``CreditStore`` in-memory se conserva solo por
+compatibilidad con tests historicos y esta deprecado: el codigo de
+produccion debe usar las funciones ``*_db`` de este modulo.
 """
 from __future__ import annotations
 
@@ -9,8 +11,14 @@ import json
 import math
 import os
 import threading
+import warnings
 from dataclasses import dataclass
 from typing import Dict, Set
+
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from backend.database.models import CreditWallet, Transaction
 
 
 def _env_int(name: str, default: int, minimum: int = 0) -> int:
@@ -88,7 +96,14 @@ class InsufficientCreditsError(Exception):
 
 
 class CreditStore:
+    """DEPRECADO: store in-memory del MVP. Usar las funciones ``*_db``."""
+
     def __init__(self) -> None:
+        warnings.warn(
+            "CreditStore esta deprecado; usa get_balance_db/apply_payment_once_db.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._lock = threading.RLock()
         self._balances: Dict[str, int] = {}
         self._processed_payments: Set[str] = set()
@@ -155,3 +170,105 @@ def get_package(package_id: str) -> CreditPackage:
     if package is None:
         raise KeyError(f"Paquete desconocido: {package_id}")
     return package
+
+
+# ---------------------------------------------------------------------------
+# Capa de persistencia PostgreSQL (produccion)
+# ---------------------------------------------------------------------------
+
+def _get_wallet_for_update(db: Session, user_id: int) -> CreditWallet | None:
+    """Devuelve la wallet bloqueada (SELECT ... FOR UPDATE en Postgres)."""
+    return (
+        db.query(CreditWallet)
+        .filter(CreditWallet.user_id == user_id)
+        .with_for_update()
+        .first()
+    )
+
+
+def get_balance_db(db: Session, user_id: int) -> int:
+    """Saldo actual; crea la wallet con el bono inicial si no existe."""
+    wallet = db.query(CreditWallet).filter(CreditWallet.user_id == user_id).first()
+    if wallet is None:
+        wallet = CreditWallet(user_id=user_id, balance=DEFAULT_INITIAL_CREDITS)
+        db.add(wallet)
+        db.commit()
+        db.refresh(wallet)
+    return wallet.balance
+
+
+def apply_payment_once_db(
+    db: Session, *, payment_id: str, user_id: int, credits: int
+) -> tuple[bool, int]:
+    """Acredita un pago de Mercado Pago de forma atomica e idempotente.
+
+    Inserta el ``Transaction`` (``payment_id`` UNIQUE) y actualiza la wallet
+    en la misma transaccion. Si el ``payment_id`` ya existe, hace rollback y
+    devuelve ``(False, saldo_actual)`` sin modificar nada.
+    """
+    if credits <= 0:
+        raise ValueError("La cantidad de creditos debe ser positiva.")
+    try:
+        db.add(
+            Transaction(
+                user_id=user_id,
+                amount=credits,
+                payment_id=payment_id,
+                transaction_type="purchase",
+            )
+        )
+        db.flush()  # fuerza el UNIQUE de payment_id dentro de la transaccion
+        wallet = _get_wallet_for_update(db, user_id)
+        if wallet is None:
+            wallet = CreditWallet(user_id=user_id, balance=0)
+            db.add(wallet)
+            db.flush()
+        wallet.balance += credits
+        db.commit()
+        return True, wallet.balance
+    except IntegrityError:
+        db.rollback()
+        wallet = db.query(CreditWallet).filter(CreditWallet.user_id == user_id).first()
+        current = wallet.balance if wallet is not None else 0
+        return False, current
+
+
+def debit_for_usage_db(
+    db: Session, *, user_id: int, credits: int, checkpoint: str = ""
+) -> int:
+    """Descuenta creditos por una transcripcion de forma atomica.
+
+    Bloquea la wallet, verifica saldo, descuenta y registra el
+    ``Transaction`` de tipo 'usage' en un unico commit. Lanza
+    ``InsufficientCreditsError`` si el saldo no alcanza (con rollback).
+    """
+    if credits <= 0:
+        raise ValueError("La cantidad de creditos debe ser positiva.")
+    try:
+        wallet = _get_wallet_for_update(db, user_id)
+        if wallet is None:
+            raise InsufficientCreditsError(
+                f"Saldo insuficiente: requiere {credits} y dispone de 0."
+            )
+        if wallet.balance < credits:
+            raise InsufficientCreditsError(
+                f"Saldo insuficiente: requiere {credits} "
+                f"y dispone de {wallet.balance}."
+            )
+        wallet.balance -= credits
+        db.add(
+            Transaction(
+                user_id=user_id,
+                amount=-credits,
+                payment_id=None,
+                transaction_type="usage",
+            )
+        )
+        db.commit()
+        return wallet.balance
+    except InsufficientCreditsError:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise

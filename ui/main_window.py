@@ -54,8 +54,7 @@ class _BufferLogHandler(logging.Handler):
 
     def emit(self, record):
         try:
-            self._buffer.write(self.format(record) + "
-")
+            self._buffer.write(self.format(record) + "\n")
         except Exception:
             self.handleError(record)
 
@@ -97,12 +96,10 @@ class MainWindow(_BaseWindow):
         else:
             logger.warning("tkinterdnd2 no está instalado. Drag & Drop deshabilitado.")
 
-        if self.auth_token:
-            self.token_entry.insert(0, self.auth_token)
         self.poll_queue()
 
         if self.auth_token:
-            self.after(250, self._login)
+            self.after(250, self._login_with_token)
 
     def _create_widgets(self):
         self.grid_columnconfigure(0, weight=1)
@@ -127,6 +124,7 @@ class MainWindow(_BaseWindow):
         self.auth_frame = ctk.CTkFrame(self)
         self.auth_frame.grid(row=1, column=0, padx=20, pady=(0, 8), sticky="ew")
         self.auth_frame.grid_columnconfigure(1, weight=1)
+        self.auth_frame.grid_columnconfigure(2, weight=1)
 
         self.auth_title = ctk.CTkLabel(
             self.auth_frame,
@@ -135,12 +133,18 @@ class MainWindow(_BaseWindow):
         )
         self.auth_title.grid(row=0, column=0, padx=(12, 8), pady=10)
 
-        self.token_entry = ctk.CTkEntry(
+        self.email_entry = ctk.CTkEntry(
             self.auth_frame,
-            placeholder_text="Token de acceso",
+            placeholder_text="Email",
+        )
+        self.email_entry.grid(row=0, column=1, padx=6, pady=10, sticky="ew")
+
+        self.password_entry = ctk.CTkEntry(
+            self.auth_frame,
+            placeholder_text="Contraseña",
             show="•",
         )
-        self.token_entry.grid(row=0, column=1, padx=6, pady=10, sticky="ew")
+        self.password_entry.grid(row=0, column=2, padx=6, pady=10, sticky="ew")
 
         self.login_button = ctk.CTkButton(
             self.auth_frame,
@@ -148,14 +152,24 @@ class MainWindow(_BaseWindow):
             width=120,
             command=self._login,
         )
-        self.login_button.grid(row=0, column=2, padx=6, pady=10)
+        self.login_button.grid(row=0, column=3, padx=6, pady=10)
+
+        self.register_button = ctk.CTkButton(
+            self.auth_frame,
+            text="Crear Cuenta",
+            width=120,
+            fg_color="#6c757d",
+            hover_color="#5a6268",
+            command=self._register,
+        )
+        self.register_button.grid(row=0, column=4, padx=6, pady=10)
 
         self.credits_label = ctk.CTkLabel(
             self.auth_frame,
             text="Créditos: —",
             width=110,
         )
-        self.credits_label.grid(row=0, column=3, padx=6, pady=10)
+        self.credits_label.grid(row=0, column=5, padx=6, pady=10)
 
         self.buy_button = ctk.CTkButton(
             self.auth_frame,
@@ -163,14 +177,14 @@ class MainWindow(_BaseWindow):
             width=140,
             command=self._buy_credits,
         )
-        self.buy_button.grid(row=0, column=4, padx=(6, 12), pady=10)
+        self.buy_button.grid(row=1, column=4, columnspan=2, padx=(6, 12), pady=(0, 10), sticky="ew")
 
         self.account_status = ctk.CTkLabel(
             self.auth_frame,
             text="No autenticado",
             text_color="#85929e",
         )
-        self.account_status.grid(row=1, column=0, columnspan=5, padx=12, pady=(0, 8), sticky="w")
+        self.account_status.grid(row=1, column=0, columnspan=4, padx=12, pady=(0, 8), sticky="w")
 
         self.drop_zone_outer = ctk.CTkFrame(
             self, fg_color="#1f3a5f", corner_radius=12
@@ -293,17 +307,73 @@ class MainWindow(_BaseWindow):
         self.btn_export_srt.pack(side="right", fill="x", expand=True, padx=(10, 0))
 
     def _login(self):
-        token = self.token_entry.get().strip()
-        if not token:
-            messagebox.showwarning("Iniciar Sesión", "Introduce el token de acceso.")
+        email = self.email_entry.get().strip()
+        password = self.password_entry.get()
+        if not email or not password:
+            messagebox.showwarning("Iniciar Sesión", "Introduce tu email y contraseña.")
             return
 
         self.login_button.configure(state="disabled")
+        self.register_button.configure(state="disabled")
         self.account_status.configure(text="Autenticando...", text_color="#ffc107")
 
         def worker():
             try:
-                user = self.backend_client.login(token)
+                user = self.backend_client.login(email, password)
+                credits = self.backend_client.get_credits()
+                self.transcription_queue.put({
+                    "type": "auth_ok",
+                    "user": user,
+                    "credits": credits,
+                })
+            except Exception as exc:
+                self.transcription_queue.put({
+                    "type": "auth_error",
+                    "message": str(exc),
+                })
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _register(self):
+        email = self.email_entry.get().strip()
+        password = self.password_entry.get()
+        if not email or not password:
+            messagebox.showwarning("Crear Cuenta", "Introduce tu email y contraseña.")
+            return
+        if len(password) < 8:
+            messagebox.showwarning(
+                "Crear Cuenta", "La contraseña debe tener al menos 8 caracteres."
+            )
+            return
+
+        self.login_button.configure(state="disabled")
+        self.register_button.configure(state="disabled")
+        self.account_status.configure(text="Creando cuenta...", text_color="#ffc107")
+
+        def worker():
+            try:
+                user = self.backend_client.register(email, password)
+                credits = self.backend_client.get_credits()
+                self.transcription_queue.put({
+                    "type": "auth_ok",
+                    "user": user,
+                    "credits": credits,
+                })
+            except Exception as exc:
+                self.transcription_queue.put({
+                    "type": "auth_error",
+                    "message": str(exc),
+                })
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _login_with_token(self):
+        """Auto-login con un JWT preexistente (TRANSCRIBER_AUTH_TOKEN)."""
+        self.account_status.configure(text="Autenticando...", text_color="#ffc107")
+
+        def worker():
+            try:
+                user = self.backend_client.login_with_token(self.auth_token)
                 credits = self.backend_client.get_credits()
                 self.transcription_queue.put({
                     "type": "auth_ok",
@@ -406,15 +476,13 @@ class MainWindow(_BaseWindow):
         if ext.lower() not in SUPPORTED_EXTENSIONS:
             messagebox.showerror(
                 "Formato no soportado",
-                f"La extensión '{ext}' no es compatible.
-"
+                f"La extensión '{ext}' no es compatible.\n"
                 f"Formatos válidos: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
             )
             return
         if not os.path.isfile(file_path):
             messagebox.showerror(
-                "Archivo no encontrado", f"No se pudo acceder al archivo:
-{file_path}"
+                "Archivo no encontrado", f"No se pudo acceder al archivo:\n{file_path}"
             )
             return
         self._load_file(file_path)
@@ -577,8 +645,10 @@ class MainWindow(_BaseWindow):
                         text_color="#2ecc71",
                     )
                     self.login_button.configure(state="normal")
+                    self.register_button.configure(state="normal")
                 elif msg_type == "auth_error":
                     self.login_button.configure(state="normal")
+                    self.register_button.configure(state="normal")
                     self.account_status.configure(
                         text="No autenticado", text_color="#dc3545"
                     )
@@ -674,8 +744,7 @@ class MainWindow(_BaseWindow):
                     self.btn_transcribe.configure(state="normal")
                     messagebox.showerror(
                         "Error de Transcripción",
-                        f"Ocurrió un error:
-{msg.get('message', '')}",
+                        f"Ocurrió un error:\n{msg.get('message', '')}",
                     )
         except queue.Empty:
             pass
@@ -684,8 +753,7 @@ class MainWindow(_BaseWindow):
 
     def _append_to_textbox(self, text: str):
         self.text_preview.configure(state="normal")
-        self.text_preview.insert("end", text + "
-")
+        self.text_preview.insert("end", text + "\n")
         self.text_preview.see("end")
         self.text_preview.configure(state="disabled")
 
@@ -751,14 +819,12 @@ class MainWindow(_BaseWindow):
                 export_to_txt(self.transcription_results, file_path)
                 messagebox.showinfo(
                     "Guardado exitoso",
-                    f"Archivo guardado correctamente en:
-{file_path}",
+                    f"Archivo guardado correctamente en:\n{file_path}",
                 )
             except Exception as exc:
                 messagebox.showerror(
                     "Error al guardar",
-                    f"No se pudo guardar el archivo TXT:
-{exc}",
+                    f"No se pudo guardar el archivo TXT:\n{exc}",
                 )
 
     def _export_srt(self):
@@ -774,12 +840,10 @@ class MainWindow(_BaseWindow):
                 export_to_srt(self.transcription_results, file_path)
                 messagebox.showinfo(
                     "Guardado exitoso",
-                    f"Subtítulos guardados correctamente en:
-{file_path}",
+                    f"Subtítulos guardados correctamente en:\n{file_path}",
                 )
             except Exception as exc:
                 messagebox.showerror(
                     "Error al guardar",
-                    f"No se pudo guardar el archivo SRT:
-{exc}",
+                    f"No se pudo guardar el archivo SRT:\n{exc}",
                 )

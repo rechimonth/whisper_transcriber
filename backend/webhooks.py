@@ -9,9 +9,12 @@ import time
 from typing import Any
 
 import mercadopago
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy.orm import Session
 
-from backend.credits import credit_store, get_package
+from backend.credits import get_package, apply_payment_once_db
+from backend.database.database import get_db
+from backend.database.models import User
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 _SIGNATURE_PARTS = re.compile(r"(?:^|,)\s*([a-zA-Z0-9_-]+)=([^,]*)")
@@ -103,6 +106,7 @@ def _fetch_payment(payment_id: str) -> dict[str, Any]:
 @router.post("/mercadopago")
 async def mercadopago_webhook(
     request: Request,
+    db: Session = Depends(get_db),
     data_id: str | None = Query(default=None, alias="data.id"),
 ) -> dict:
     x_signature = request.headers.get("x-signature", "")
@@ -146,6 +150,20 @@ async def mercadopago_webhook(
     user_id = match.group("user_id")
     package_id = match.group("package_id")
     try:
+        user_id_int = int(user_id)
+    except (TypeError, ValueError):
+        return {
+            "received": True,
+            "processed": False,
+            "reason": "user_id invalido en external_reference",
+        }
+    if db.get(User, user_id_int) is None:
+        return {
+            "received": True,
+            "processed": False,
+            "reason": "usuario desconocido",
+        }
+    try:
         package = get_package(package_id)
     except KeyError:
         return {
@@ -173,9 +191,10 @@ async def mercadopago_webhook(
             "reason": "importe o moneda del pago no coincide con el paquete",
         }
 
-    applied, balance = credit_store.apply_payment_once(
+    applied, balance = apply_payment_once_db(
+        db,
         payment_id=payment_id,
-        user_id=user_id,
+        user_id=user_id_int,
         credits=package.credits,
     )
 
@@ -183,7 +202,7 @@ async def mercadopago_webhook(
         "received": True,
         "processed": applied,
         "payment_id": payment_id,
-        "user_id": user_id,
+        "user_id": user_id_int,
         "credits_added": package.credits if applied else 0,
         "credits_balance": balance,
     }

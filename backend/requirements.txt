@@ -4,3 +4,8 @@ python-multipart>=0.0.20,<1
 python-dotenv>=1.0,<2
 groq>=0.11,<2
 mercadopago==3.6.0
+sqlalchemy>=2.0,<2.1
+psycopg2-binary>=2.9,<3
+alembic>=1.13,<2
+passlib[argon2]>=1.7.4,<2
+python-jose[cryptography]>=3.3,<4
