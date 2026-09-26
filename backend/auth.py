@@ -28,17 +28,29 @@ def _load_tokens() -> Dict[str, AuthenticatedUser]:
             return {
                 token: AuthenticatedUser(
                     user_id=str(value["user_id"]),
-                    email=str(value.get("email", f"{value['user_id']}@example.local")),
+                    email=str(
+                        value.get(
+                            "email",
+                            f"{value['user_id']}@example.local",
+                        )
+                    ),
                 )
                 for token, value in payload.items()
             }
         except (ValueError, TypeError, KeyError) as exc:
-            raise RuntimeError("AUTH_TOKENS_JSON no contiene un objeto valido.") from exc
+            raise RuntimeError(
+                "AUTH_TOKENS_JSON no contiene un objeto valido."
+            ) from exc
 
     token = os.getenv("MOCK_AUTH_TOKEN", "demo-token").strip()
     user_id = os.getenv("MOCK_USER_ID", "demo-user").strip()
     email = os.getenv("MOCK_USER_EMAIL", "demo@example.local").strip()
-    return {token: AuthenticatedUser(user_id=user_id, email=email)}
+    return {
+        token: AuthenticatedUser(
+            user_id=user_id,
+            email=email,
+        )
+    }
 
 
 TOKENS = _load_tokens()
@@ -68,6 +80,13 @@ def get_current_user(
     return user
 
 
+def current_user_dependency(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+) -> AuthenticatedUser:
+    """Alias estable para inyectar autenticacion en otros routers."""
+    return get_current_user(credentials)
+
+
 @router.post("/login")
 def login(payload: LoginRequest) -> dict:
     user = TOKENS.get(payload.token)
@@ -86,4 +105,7 @@ def login(payload: LoginRequest) -> dict:
 
 @router.get("/me")
 def me(user: AuthenticatedUser = Depends(get_current_user)) -> dict:
-    return {"user_id": user.user_id, "email": user.email}
+    return {
+        "user_id": user.user_id,
+        "email": user.email,
+    }
