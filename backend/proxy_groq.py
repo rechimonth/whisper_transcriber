@@ -1,8 +1,8 @@
 """Proxy del backend hacia Groq.
 
-El cliente de escritorio nunca recibe la API key. El servidor mide la
-duracion, reserva los creditos, transcribe y reintegra el saldo si el servicio
-externo falla.
+El cliente de escritorio nunca recibe la API key. El servidor verifica el
+saldo en PostgreSQL, transcribe y descuenta los creditos con un debito
+atomico (wallet + registro 'usage' en un unico commit).
 """
 from __future__ import annotations
 
@@ -13,19 +13,20 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from sqlalchemy.orm import Session
 
 from backend.auth import AuthenticatedUser, current_user_dependency
 from backend.credits import (
     InsufficientCreditsError,
-    credit_store,
     credits_for_duration,
+    debit_for_usage_db,
+    get_balance_db,
 )
+from backend.database.database import get_db
 from core.audio_utils import get_audio_duration
 from core.groq_transcriber import (
-    GroqNotConfiguredError,
     GroqTranscriber,
     GroqTranscriberError,
-    GroqValidationError,
 )
 
 router = APIRouter(tags=["transcription"])
@@ -74,10 +75,13 @@ def _segments_to_text(segments: list[dict]) -> str:
 
 
 @router.get("/credits")
-def get_credits(user: AuthenticatedUser = Depends(current_user_dependency)) -> dict:
+def get_credits(
+    user: AuthenticatedUser = Depends(current_user_dependency),
+    db: Session = Depends(get_db),
+) -> dict:
     return {
         "user_id": user.user_id,
-        "credits": credit_store.get_balance(user.user_id),
+        "credits": get_balance_db(db, user.user_id),
     }
 
 
@@ -85,6 +89,7 @@ def get_credits(user: AuthenticatedUser = Depends(current_user_dependency)) -> d
 async def transcribe(
     audio: UploadFile = File(...),
     user: AuthenticatedUser = Depends(current_user_dependency),
+    db: Session = Depends(get_db),
 ) -> dict:
     filename = Path(audio.filename or "upload.bin")
     if filename.suffix.lower() not in SUPPORTED_EXTENSIONS:
@@ -104,7 +109,6 @@ async def transcribe(
         )
 
     path = SERVER_TMP_DIR / f"{uuid4().hex}_{filename.name}"
-    reserved_credits = 0
 
     try:
         file_hash = await _save_upload(audio, path)
@@ -119,38 +123,32 @@ async def transcribe(
             )
 
         required = credits_for_duration(duration)
+        if get_balance_db(db, user.user_id) < required:
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Saldo insuficiente: requiere {required} y dispone de "
+                    f"{get_balance_db(db, user.user_id)}."
+                ),
+            )
+
+        transcriber = GroqTranscriber(
+            api_key=server_key,
+            max_workers=min(int(os.getenv("GROQ_MAX_WORKERS", "3")), 3),
+        )
+        segments = transcriber.transcribe_file(
+            str(path),
+            language=None,
+            checkpoint_id=f"{user.user_id}-{file_hash[:20]}",
+        )
+
         try:
-            remaining = credit_store.reserve(user.user_id, required)
-            reserved_credits = required
+            remaining = debit_for_usage_db(
+                db, user_id=user.user_id, credits=required
+            )
         except InsufficientCreditsError as exc:
             raise HTTPException(status_code=402, detail=str(exc)) from exc
 
-        try:
-            transcriber = GroqTranscriber(
-                api_key=server_key,
-                max_workers=min(int(os.getenv("GROQ_MAX_WORKERS", "3")), 3),
-            )
-            segments = transcriber.transcribe_file(
-                str(path),
-                language=None,
-                checkpoint_id=f"{user.user_id}-{file_hash[:20]}",
-            )
-        except (
-            GroqNotConfiguredError,
-            GroqValidationError,
-            GroqTranscriberError,
-        ):
-            if reserved_credits:
-                remaining = credit_store.refund(user.user_id, reserved_credits)
-                reserved_credits = 0
-            raise
-        except Exception:
-            if reserved_credits:
-                remaining = credit_store.refund(user.user_id, reserved_credits)
-                reserved_credits = 0
-            raise
-
-        reserved_credits = 0
         return {
             "text": _segments_to_text(segments),
             "segments": segments,
@@ -159,14 +157,10 @@ async def transcribe(
             "credits_remaining": remaining,
         }
     except HTTPException:
-        if reserved_credits:
-            credit_store.refund(user.user_id, reserved_credits)
         raise
     except GroqTranscriberError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:
-        if reserved_credits:
-            credit_store.refund(user.user_id, reserved_credits)
         raise HTTPException(
             status_code=500,
             detail=f"Error inesperado del proxy de transcripcion: {exc}",
