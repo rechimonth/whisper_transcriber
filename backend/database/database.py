@@ -15,6 +15,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 # Cargar backend/.env antes de leer DATABASE_URL.
+# (Ojo: Path.with_name() reemplaza el ultimo componente, por eso se usa /.)
+_backend_env = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(_backend_env, override=False)
 load_dotenv(Path(__file__).with_name(".env"), override=False)
 load_dotenv(Path(__file__).parent.parent.with_name(".env"), override=False)
 

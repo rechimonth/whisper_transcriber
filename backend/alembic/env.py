@@ -18,7 +18,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # Cargar backend/.env antes de leer DATABASE_URL.
-load_dotenv(Path(__file__).parent.parent.with_name(".env"), override=False)
+# (Ojo: Path.with_name() reemplaza el ultimo componente, por eso se usa /.)
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 from backend.database.database import Base, get_database_url  # noqa: E402
 
