@@ -65,15 +65,17 @@ class BackendClient:
             pass
         return response.text.strip() or f"Error HTTP {response.status_code}"
 
-    def login(self, access_token: str) -> dict[str, Any]:
-        token = access_token.strip()
-        if len(token) < 8:
-            raise AuthenticationError("El token debe tener al menos 8 caracteres.")
+    def login(self, email: str, password: str) -> dict[str, Any]:
+        address = email.strip().lower()
+        if "@" not in address or len(address) < 3:
+            raise AuthenticationError("Introduce un email valido.")
+        if len(password) < 8:
+            raise AuthenticationError("La contrasena debe tener al menos 8 caracteres.")
 
         try:
             response = self.session.post(
                 f"{self.base_url}/auth/login",
-                json={"token": token},
+                data={"username": address, "password": password},
                 timeout=30,
             )
         except requests.RequestException as exc:
@@ -96,6 +98,73 @@ class BackendClient:
         self.token = str(payload["access_token"])
         self.user = payload
         return payload
+
+    def register(self, email: str, password: str) -> dict[str, Any]:
+        address = email.strip().lower()
+        if "@" not in address or len(address) < 3:
+            raise AuthenticationError("Introduce un email valido.")
+        if len(password) < 8:
+            raise AuthenticationError("La contrasena debe tener al menos 8 caracteres.")
+
+        try:
+            response = self.session.post(
+                f"{self.base_url}/auth/register",
+                json={"email": address, "password": password},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise BackendUnavailableError(
+                f"No se pudo conectar con el backend: {exc}"
+            ) from exc
+
+        if response.status_code == 401:
+            raise AuthenticationError(self._detail(response), response.status_code)
+        if response.status_code >= 400:
+            raise BackendClientError(self._detail(response), response.status_code)
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise BackendClientError(
+                "El backend devolvio una respuesta no valida."
+            ) from exc
+
+        self.token = str(payload["access_token"])
+        self.user = payload
+        return payload
+
+    def login_with_token(self, token: str) -> dict[str, Any]:
+        """Sesion con un JWT ya existente (ej. TRANSCRIBER_AUTH_TOKEN)."""
+        candidate = token.strip()
+        if len(candidate) < 8:
+            raise AuthenticationError("El token debe tener al menos 8 caracteres.")
+
+        try:
+            response = self.session.get(
+                f"{self.base_url}/auth/me",
+                headers={"Authorization": f"Bearer {candidate}"},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise BackendUnavailableError(
+                f"No se pudo conectar con el backend: {exc}"
+            ) from exc
+
+        if response.status_code == 401:
+            raise AuthenticationError(self._detail(response), response.status_code)
+        if response.status_code >= 400:
+            raise BackendClientError(self._detail(response), response.status_code)
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise BackendClientError(
+                "El backend devolvio una respuesta no valida."
+            ) from exc
+
+        self.token = candidate
+        self.user = {"user_id": payload.get("user_id"), "email": payload.get("email")}
+        return self.user
 
     def get_credits(self) -> int:
         try:
