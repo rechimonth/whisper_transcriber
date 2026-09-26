@@ -60,13 +60,27 @@ class _BufferLogHandler(logging.Handler):
 
 
 class MainWindow(_BaseWindow):
+    SIDEBAR_WIDTH = 230
+
     def __init__(self):
         super().__init__()
         self.title("Transcriptor de Audio y Video")
-        self.geometry("720x780")
-        self.resizable(False, False)
+        self.geometry("1080x800")
+        self.minsize(960, 700)
+        self.resizable(True, True)
         ctk.set_appearance_mode("Dark")
         ctk.set_default_color_theme("blue")
+
+        # Layout raiz responsivo: sidebar fija + area principal elastica.
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, minsize=self.SIDEBAR_WIDTH)
+        self.grid_columnconfigure(1, weight=1)
+
+        self.assets_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "assets",
+        )
+        self._images: list = []  # retiene CTkImage (evita garbage collector)
 
         self.selected_file_path = None
         self.transcription_results = None
@@ -101,28 +115,127 @@ class MainWindow(_BaseWindow):
         if self.auth_token:
             self.after(250, self._login_with_token)
 
+    def _load_ctk_image(self, filename: str, size: tuple[int, int]):
+        """Carga un asset como CTkImage; None si falta (la UI sigue funcional)."""
+        try:
+            from PIL import Image
+
+            image = Image.open(os.path.join(self.assets_dir, filename))
+            ctk_image = ctk.CTkImage(
+                light_image=image, dark_image=image, size=size
+            )
+            self._images.append(ctk_image)
+            return ctk_image
+        except Exception as exc:
+            logger.warning("Asset no disponible (%s): %s", filename, exc)
+            return None
+
     def _create_widgets(self):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(6, weight=1)
 
-        self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.header_frame.grid(row=0, column=0, padx=20, pady=(20, 8), sticky="ew")
+        # ---- Barra lateral (col 0) ----
+        self.sidebar = ctk.CTkFrame(self, width=self.SIDEBAR_WIDTH, corner_radius=0)
+        self.sidebar.grid(row=0, column=0, sticky="nsew")
+        self.sidebar.grid_propagate(False)
+        self.sidebar.grid_columnconfigure(0, weight=1)
+
+        sidebar_bg = self._load_ctk_image("sidebar_bg.png", (self.SIDEBAR_WIDTH, 800))
+        if sidebar_bg is not None:
+            self.sidebar_bg = ctk.CTkLabel(self.sidebar, text="", image=sidebar_bg)
+            self.sidebar_bg._layout_bg = True
+            self.sidebar_bg.place(x=0, y=0, relwidth=1, relheight=1)
+            self.sidebar_bg.lower()
+
+        logo_mini = self._load_ctk_image("logo_mini.png", (64, 64))
+        self.sidebar_logo = ctk.CTkLabel(
+            self.sidebar, text="", image=logo_mini
+        ) if logo_mini else ctk.CTkLabel(self.sidebar, text="🎙️", font=ctk.CTkFont(size=40))
+        self.sidebar_logo.grid(row=0, column=0, pady=(24, 8))
+
+        self.sidebar_title = ctk.CTkLabel(
+            self.sidebar,
+            text="Transcriptor",
+            font=ctk.CTkFont(family="Helvetica", size=18, weight="bold"),
+        )
+        self.sidebar_title.grid(row=1, column=0)
+        self.sidebar_subtitle = ctk.CTkLabel(
+            self.sidebar,
+            text="Whisper SaaS",
+            font=ctk.CTkFont(size=11),
+            text_color="#85929e",
+        )
+        self.sidebar_subtitle.grid(row=2, column=0, pady=(0, 12))
+
+        card_image = self._load_ctk_image("dashboard_card.png", (196, 98))
+        self.credits_label = ctk.CTkLabel(
+            self.sidebar,
+            text="Créditos: —",
+            image=card_image,
+            compound="center",
+            font=ctk.CTkFont(weight="bold", size=14),
+            width=196,
+            height=98,
+        )
+        self.credits_label.grid(row=3, column=0, padx=16, pady=6)
+
+        self.buy_button = ctk.CTkButton(
+            self.sidebar,
+            text="Comprar Créditos",
+            command=self._buy_credits,
+        )
+        self.buy_button.grid(row=4, column=0, padx=16, pady=6, sticky="ew")
+
+        self.account_status = ctk.CTkLabel(
+            self.sidebar,
+            text="No autenticado",
+            text_color="#85929e",
+            wraplength=190,
+            font=ctk.CTkFont(size=11),
+        )
+        self.account_status.grid(row=5, column=0, padx=16, pady=6)
+
+        self.sidebar_spacer = ctk.CTkLabel(self.sidebar, text="")
+        self.sidebar_spacer.grid(row=6, column=0, sticky="nsew")
+        self.sidebar.grid_rowconfigure(6, weight=1)
+        self.sidebar_footer = ctk.CTkLabel(
+            self.sidebar,
+            text="v1.0 · Local + Online",
+            font=ctk.CTkFont(size=10),
+            text_color="#6d8eb4",
+        )
+        self.sidebar_footer.grid(row=7, column=0, pady=(0, 16))
+
+        # ---- Area principal (col 1) ----
+        self.main_area = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_area.grid(row=0, column=1, padx=16, pady=12, sticky="nsew")
+        self.main_area.grid_columnconfigure(0, weight=1)
+        self.main_area.grid_rowconfigure(5, weight=1)
+
+        self.header_frame = ctk.CTkFrame(self.main_area, fg_color="transparent")
+        self.header_frame.grid(row=0, column=0, pady=(4, 8), sticky="ew")
+        logo_main = self._load_ctk_image("logo_main.png", (96, 96))
+        if logo_main is not None:
+            self.logo_label = ctk.CTkLabel(self.header_frame, text="", image=logo_main)
+            self.logo_label.pack(side="left", padx=(0, 14))
+        self.header_text = ctk.CTkFrame(self.header_frame, fg_color="transparent")
+        self.header_text.pack(side="left", fill="y")
         self.title_label = ctk.CTkLabel(
-            self.header_frame,
+            self.header_text,
             text="Transcriptor Whisper",
             font=ctk.CTkFont(family="Helvetica", size=24, weight="bold"),
         )
         self.title_label.pack(anchor="w")
         self.subtitle_label = ctk.CTkLabel(
-            self.header_frame,
+            self.header_text,
             text="Local 100% privado · Online mediante servidor seguro",
             font=ctk.CTkFont(family="Helvetica", size=12),
             text_color="#85929e",
         )
         self.subtitle_label.pack(anchor="w", pady=(2, 0))
 
-        self.auth_frame = ctk.CTkFrame(self)
-        self.auth_frame.grid(row=1, column=0, padx=20, pady=(0, 8), sticky="ew")
+        self.auth_frame = ctk.CTkFrame(self.main_area)
+        self.auth_frame.grid(row=1, column=0, pady=(0, 8), sticky="ew")
         self.auth_frame.grid_columnconfigure(1, weight=1)
         self.auth_frame.grid_columnconfigure(2, weight=1)
 
@@ -160,36 +273,14 @@ class MainWindow(_BaseWindow):
             width=120,
             fg_color="#6c757d",
             hover_color="#5a6268",
-            command=self._register,
+            command=self._register_account,
         )
-        self.register_button.grid(row=0, column=4, padx=6, pady=10)
-
-        self.credits_label = ctk.CTkLabel(
-            self.auth_frame,
-            text="Créditos: —",
-            width=110,
-        )
-        self.credits_label.grid(row=0, column=5, padx=6, pady=10)
-
-        self.buy_button = ctk.CTkButton(
-            self.auth_frame,
-            text="Comprar Créditos",
-            width=140,
-            command=self._buy_credits,
-        )
-        self.buy_button.grid(row=1, column=4, columnspan=2, padx=(6, 12), pady=(0, 10), sticky="ew")
-
-        self.account_status = ctk.CTkLabel(
-            self.auth_frame,
-            text="No autenticado",
-            text_color="#85929e",
-        )
-        self.account_status.grid(row=1, column=0, columnspan=4, padx=12, pady=(0, 8), sticky="w")
+        self.register_button.grid(row=0, column=4, padx=(6, 12), pady=10)
 
         self.drop_zone_outer = ctk.CTkFrame(
-            self, fg_color="#1f3a5f", corner_radius=12
+            self.main_area, fg_color="#1f3a5f", corner_radius=12
         )
-        self.drop_zone_outer.grid(row=2, column=0, padx=20, pady=(0, 6), sticky="ew")
+        self.drop_zone_outer.grid(row=2, column=0, pady=(0, 6), sticky="ew")
         self.drop_zone_frame = ctk.CTkFrame(
             self.drop_zone_outer, fg_color="#1a2744", corner_radius=10
         )
@@ -227,8 +318,8 @@ class MainWindow(_BaseWindow):
         ):
             widget.bind("<Button-1>", lambda e: self._select_file())
 
-        self.control_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.control_frame.grid(row=3, column=0, padx=20, pady=6, sticky="ew")
+        self.control_frame = ctk.CTkFrame(self.main_area, fg_color="transparent")
+        self.control_frame.grid(row=3, column=0, pady=6, sticky="ew")
 
         self.btn_transcribe = ctk.CTkButton(
             self.control_frame,
@@ -256,8 +347,8 @@ class MainWindow(_BaseWindow):
         self.mode_switch.set("Local (CPU)")
         self.mode_switch.pack(side="left", fill="x", expand=True)
 
-        self.progress_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.progress_frame.grid(row=4, column=0, padx=20, pady=4, sticky="ew")
+        self.progress_frame = ctk.CTkFrame(self.main_area, fg_color="transparent")
+        self.progress_frame.grid(row=4, column=0, pady=4, sticky="ew")
         self.status_indicator = ctk.CTkLabel(
             self.progress_frame, text="", width=20, height=20, fg_color="#6c757d"
         )
@@ -280,8 +371,8 @@ class MainWindow(_BaseWindow):
         self.progress_bar.pack(fill="x", pady=(5, 5))
         self.progress_bar.set(0.0)
 
-        self.preview_frame = ctk.CTkFrame(self)
-        self.preview_frame.grid(row=6, column=0, padx=20, pady=8, sticky="nsew")
+        self.preview_frame = ctk.CTkFrame(self.main_area)
+        self.preview_frame.grid(row=5, column=0, pady=8, sticky="nsew")
         self.preview_title = ctk.CTkLabel(
             self.preview_frame,
             text="Vista Previa de Transcripción",
@@ -293,8 +384,8 @@ class MainWindow(_BaseWindow):
         )
         self.text_preview.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        self.export_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.export_frame.grid(row=7, column=0, padx=20, pady=(4, 20), sticky="ew")
+        self.export_frame = ctk.CTkFrame(self.main_area, fg_color="transparent")
+        self.export_frame.grid(row=6, column=0, pady=(4, 0), sticky="ew")
         self.btn_export_txt = ctk.CTkButton(
             self.export_frame, text="Guardar en TXT",
             command=self._export_txt, state="disabled"
@@ -334,7 +425,7 @@ class MainWindow(_BaseWindow):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _register(self):
+    def _register_account(self):
         email = self.email_entry.get().strip()
         password = self.password_entry.get()
         if not email or not password:

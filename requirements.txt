@@ -4,3 +4,4 @@ tkinterdnd2>=0.3.0
 pyinstaller>=6.10.0
 python-dotenv>=1.0.0
 requests>=2.32,<3
+Pillow>=10.0.0
