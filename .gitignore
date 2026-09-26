@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Entornos virtuales
+venv/
+.venv/
+
+# Artefactos de compilación PyInstaller (se conservan los scripts fuente en build/)
+build/TranscriptorVideoIA/
+dist/
+*.spec.bak
+
+# Archivos de prueba temporales
+test_audio.wav
+test_output.txt
+test_output.srt
+
+# Log de ejecucion de la app
+app.log
+
+# Secretos: API keys (NUNCA subir al repositorio)
+.env
+.env.local
