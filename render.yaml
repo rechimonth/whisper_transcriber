@@ -1,0 +1,28 @@
+# Render Blueprint — backend FastAPI (whisper_transcriber).
+# Despliegue: conecta el repo en dashboard.render.com > New > Blueprint
+# y define las variables con "sync: false" en el panel (nunca en git).
+services:
+  - type: web
+    name: whisper-transcriber-backend
+    runtime: python
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        sync: false # postgresql+psycopg2://... (Supabase pooler :6543)
+      - key: JWT_SECRET_KEY
+        sync: false # generar: python -c "import secrets;print(secrets.token_urlsafe(48))"
+        # JWT_ALGORITHM / JWT_EXPIRE_MINUTES tienen defaults sanos (HS256/43200).
+      - key: GROQ_API_KEY_SERVER
+        sync: false # console.groq.com (SOLO servidor)
+      - key: MP_ACCESS_TOKEN
+        sync: false
+      - key: MP_WEBHOOK_SECRET
+        sync: false
+      - key: MP_WEBHOOK_URL
+        sync: false # https://<tu-servicio>.onrender.com/webhooks/mercadopago
+      - key: CORS_ORIGINS
+        value: http://localhost,http://127.0.0.1
