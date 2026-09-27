@@ -9,6 +9,7 @@ venv/
 
 # Artefactos de compilación PyInstaller (se conservan los scripts fuente en build/)
 build/TranscriptorVideoIA/
+build/build_app/
 build/app_icon_frozen.ico
 dist/
 *.spec.bak
