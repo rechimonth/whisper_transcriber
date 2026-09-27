@@ -1,237 +1,138 @@
-# TranscriptorVideoIA
+# 🎙️ Whisper Transcriber — TranscriptorVideoIA
 
-TranscriptorVideoIA es una aplicación de escritorio para convertir audio y vídeo en texto rápidamente combinando dos motores:
+> **SaaS de transcripción de audio y video con IA.** Convierte cualquier archivo multimedia en texto en minutos: 100% privado en local con Whisper en CPU, o ultra-rápido en la nube con Whisper Large en Groq. Autenticación real, billetera de créditos, pagos con Mercado Pago y cliente de escritorio distribuible como `.exe`.
 
-- **Online:** Groq + Whisper, procesado por un backend seguro.
-- **Local:** faster-whisper en CPU, **100% gratuito y privado**, sin enviar el archivo a un servicio externo.
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
+![Groq](https://img.shields.io/badge/Groq-F55036?style=for-the-badge&logoColor=white)
+![Mercado Pago](https://img.shields.io/badge/Mercado_Pago-00B1EA?style=for-the-badge&logoColor=white)
+![CustomTkinter](https://img.shields.io/badge/CustomTkinter-2CC5FF?style=for-the-badge&logoColor=white)
 
-El modo Online está preparado para evolucionar a un SaaS basado en **créditos de transcripción**, autenticación de usuarios y pagos mediante **Mercado Pago Checkout Pro**.
+---
 
-## Arquitectura
+## 🏗️ Arquitectura y Stack Tecnológico
 
 ```text
-┌──────────────────────────────┐
-│ Desktop · CustomTkinter      │
-│ Local Whisper / Online HTTP  │
-└──────────────┬───────────────┘
-               │ Bearer token
-               ▼
-┌──────────────────────────────┐
-│ FastAPI                      │
-│ auth · credits · proxy       │
-│ Mercado Pago · webhooks      │
-└───────────┬───────────┬──────┘
-            │           │
-            ▼           ▼
-         Groq API   Mercado Pago
+┌─────────────────────────────────┐
+│  Desktop · CustomTkinter        │  Threading + Queue (sin bloqueo UI)
+│  Sidebar + Dashboard · CTkImage │  Fallback Online → Local
+└───────────────┬─────────────────┘
+                │ Bearer JWT (30 días)
+                ▼
+┌─────────────────────────────────┐      ┌──────────────┐
+│  FastAPI · SQLAlchemy 2.0       ├─────►│  Groq API    │
+│  auth · credits · proxy · pagos │      │  Whisper L.  │
+│  SlowAPI · Webhooks MP          ├─────►│ Mercado Pago │
+└───────────────┬─────────────────┘      └──────────────┘
+                │ pooler :6543 + Alembic
+                ▼
+┌─────────────────────────────────┐
+│  Supabase · PostgreSQL 17       │
+│  users · wallets · transactions │
+│  token_blocklist                │
+└─────────────────────────────────┘
 ```
 
-La **API key de Groq nunca debe estar en el cliente de escritorio**. El servidor utiliza `GROQ_API_KEY_SERVER`.
+### 🖥️ Frontend — Desktop Client (`ui/`, `core/`)
+- **CustomTkinter** con layout comercial: barra lateral (logo, tarjeta de créditos, estado) + dashboard principal responsivo (redimensionable, grid elástico).
+- **Resiliencia de red:** todo HTTP corre en `threading.Thread` con cola de mensajes al Main Thread; ante caída del backend muestra `messagebox` y el modo Online hace **fallback automático a Local**.
+- **QA geométrico:** `tests/test_ui_layout.py` valida bounding boxes reales (cero superposiciones, todo encuadrado) con triple render.
+- **Distribución:** compilado con PyInstaller (`build_app.spec`, windowed, assets empaquetados) → `.exe` en `dist/`.
 
-## Requisitos previos
+### ⚡ Backend — REST API (`backend/`)
+- **FastAPI + SQLAlchemy 2.0** con sesiones por request (`Depends(get_db)`, cierre garantizado).
+- **Despliegue optimizado:** `render.yaml` (Blueprint + health check) y `Procfile` (Railway/Heroku). Comando: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`.
 
-- Python 3.10 o superior.
-- Windows recomendado para los scripts `.bat`.
-- **FFmpeg y ffprobe** instalados y disponibles en el `PATH`.
-- Una cuenta de Groq para el modo Online.
-- Una cuenta de Mercado Pago para probar Checkout Pro.
+### 🗄️ Base de Datos — Supabase (PostgreSQL 17)
+- Conexión vía **pooler Supavisor IPv4 `:6543`** (la directa es solo IPv6).
+- **Migraciones Alembic** versionadas (`users`, `credit_wallets`, `transactions`, `token_blocklist`).
+- Operaciones de saldo **atómicas** (`SELECT … FOR UPDATE` + commit único).
 
-## Instalación del cliente de escritorio
+---
 
-Desde la raíz del repositorio:
+## 🛡️ Seguridad y Protección (DevSecOps)
 
-```bat
-py -m venv venv
-venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
+| Capa | Implementación |
+|---|---|
+| **Auth** | Email + password con **Argon2**, JWT HS256 de 30 días con `jti` único |
+| **Revocación** | **`token_blocklist`** en DB: `POST /auth/logout` revoca el `jti`; `get_current_user` lo verifica en cada request (401 si revocado) + purga de expirados |
+| **Rate Limiting** | **SlowAPI** por IP: `5/minute` en login, `3/minute` en registro (frena DoS sobre Argon2 y fuerza bruta) → `429` |
+| **Webhooks** | HMAC-SHA256 (`x-signature` + anti-replay), verificación de importe/moneda vs paquete, idempotencia por `UNIQUE(payment_id)` |
+| **Secretos** | Cero hardcodeados: todo vía `os.getenv`; `.env` gitignored; `JWT_SECRET_KEY` ausente = warning al arrancar |
+| **Errores** | Groq/MP mapeados a `502`/`503`/`402` con mensajes genéricos; trazas solo en logs del servidor |
 
-El `requirements.txt` de la raíz contiene únicamente las dependencias necesarias para el **cliente de escritorio** y la compilación local: faster-whisper, CustomTkinter, drag & drop, PyInstaller, python-dotenv y el cliente HTTP.
+---
 
-No necesitas configurar ninguna API key de Groq para usar el modo Local.
+## 💳 Motor de Monetización — Billetera de Créditos
 
-Copia `.env.example` a `.env` y, como mínimo, configura:
+1. Al registrarse, el usuario recibe **60 créditos de bienvenida** en la misma transacción que crea su cuenta.
+2. El coste es `ceil(minutos × CREDITS_PER_MINUTE)` (mínimo 1).
+3. **Compra:** `POST /payments/preference` crea el Checkout Pro con `external_reference = transcriber:{user_id}:{paquete}:{nonce}`.
+4. **Acreditación en tiempo real:** el webhook valida firma → confirma pago aprobado en la API de MP → inserta `Transaction('purchase')` y suma al `CreditWallet` **atómicamente**. Reenvíos duplicados devuelven el saldo sin doble cobro.
+5. **Consumo:** `POST /transcribe` verifica saldo → transcribe en Groq → débito atómico con `Transaction('usage')`. Sin saldo → `402`; si Groq falla, **no se descuenta nada**.
 
-```env
-TRANSCRIBER_BACKEND_URL=http://localhost:8000
-TRANSCRIBER_AUTH_TOKEN=
-```
+---
 
-La variable `TRANSCRIBER_AUTH_TOKEN` es opcional. Para el MVP puedes iniciar sesión desde la propia interfaz usando el token configurado en el backend.
+## 🚀 Guía de Uso Rápido
 
-## Instalación del backend
+### Opción A — Ejecutable (recomendado)
+Descarga el instalador listo para usar desde la pestaña de [**Releases**](https://github.com/rechimonth/whisper_transcriber/releases): `TranscriptorVideoIA.exe`. No requiere Python. El modo Local funciona sin cuenta; el modo Online pide registro + créditos.
 
-Crea un entorno separado para el servidor:
+### Opción B — Backend en desarrollo local
 
-```bat
+```bash
+# 1. Entorno y dependencias
 py -m venv backend\.venv
 backend\.venv\Scripts\activate
-python -m pip install --upgrade pip
 pip install -r backend\requirements.txt
-```
 
-El archivo `backend/requirements.txt` instala las dependencias exclusivas del servidor: FastAPI, Uvicorn, multipart uploads, python-dotenv, Groq y el SDK oficial de Mercado Pago.
+# 2. Configuración (ver backend/.env.example)
+copy backend\.env.example backend\.env   # completa DATABASE_URL y JWT_SECRET_KEY
 
-Copia:
-
-```bat
-copy backend\.env.example backend\.env
-```
-
-y completa los secretos del servidor:
-
-```env
-GROQ_API_KEY_SERVER=tu_key_de_groq
-MP_ACCESS_TOKEN=tu_access_token_de_mercado_pago
-MP_WEBHOOK_SECRET=tu_secreto_de_webhook
-```
-
-El resto de las variables de `backend/.env.example` permite ajustar créditos, paquetes, límites de archivos y CORS.
-
-### Arrancar el backend
-
-Desde la raíz del repositorio, con el entorno del backend activado:
-
-```bat
+# 3. Migraciones y arranque
+cd backend
+python -m alembic upgrade head
 uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Comprueba:
+Verifica con `GET http://127.0.0.1:8000/health` → `{"status":"ok",...}` y la doc interactiva en `/docs`.
 
-```text
-GET http://127.0.0.1:8000/health
-```
+### Endpoints principales
 
-La respuesta esperada es:
-
-```json
-{"status":"ok","service":"transcriptorvideoia-backend"}
-```
-
-## Uso de la aplicación
-
-### `ejecutar_app.bat`
-
-Es el lanzador normal de la aplicación de escritorio.
-
-- Crea `venv` si todavía no existe.
-- Instala las dependencias desde el `requirements.txt` raíz.
-- Ejecuta `main.py` con `pythonw.exe`, por lo que la aplicación se abre sin una ventana de consola.
-- Los logs se conservan en `app.log`.
-
-### `ejecutar_app_debug.bat`
-
-Es el lanzador de diagnóstico.
-
-- Requiere que el entorno `venv` ya exista.
-- Ejecuta `main.py` con `python.exe`.
-- Mantiene visible la consola para inspeccionar errores y mensajes de arranque.
-- Al cerrar la aplicación, deja la consola abierta para revisar el diagnóstico.
-
-## Flujo Online
-
-1. Arranca el backend FastAPI.
-2. Abre la aplicación de escritorio.
-3. Introduce el token de acceso y pulsa **Iniciar Sesión**.
-4. El cliente consulta y muestra el saldo de créditos.
-5. Selecciona **Online (Servidor)**.
-6. Pulsa **Comprar Créditos** para generar y abrir el Checkout Pro de Mercado Pago.
-7. Después del pago aprobado, el webhook del backend acredita los créditos.
-8. Una transcripción Online reserva los créditos necesarios según la duración.
-9. Si Groq termina correctamente, los créditos quedan consumidos.
-10. Si Groq falla, el backend reintegra la reserva y el cliente puede continuar con el fallback Local.
-
-El modo Local no depende de créditos y no necesita conexión con el backend.
-
-## Endpoints del backend
-
-| Método | Endpoint | Autenticación | Uso |
+| Método | Endpoint | Auth | Uso |
 |---|---|---|---|
-| GET | `/health` | No | Health check |
-| POST | `/auth/login` | No | Valida token mock y devuelve sesión |
-| GET | `/auth/me` | Bearer | Consulta el usuario actual |
-| GET | `/credits` | Bearer | Consulta saldo |
-| POST | `/transcribe` | Bearer | Sube audio/vídeo, valida saldo y transcribe mediante Groq |
-| POST | `/payments/preference` | Bearer | Crea una preferencia de Checkout Pro |
-| POST | `/webhooks/mercadopago` | Firma MP | Recibe y valida notificaciones de pagos |
+| POST | `/auth/register` | No (3/min) | Crea cuenta + 60 créditos |
+| POST | `/auth/login` | No (5/min, form OAuth2) | Devuelve JWT 30 días |
+| POST | `/auth/logout` | Bearer | Revoca el token actual |
+| GET | `/auth/me` · `/credits` | Bearer | Perfil y saldo |
+| POST | `/transcribe` | Bearer | Transcribe vía Groq, descuenta créditos |
+| POST | `/payments/preference` | Bearer | Checkout Pro de Mercado Pago |
+| POST | `/webhooks/mercadopago` | Firma HMAC | Acreditación idempotente |
 
-## Créditos
+### Tests
 
-El MVP calcula el coste con:
+```bash
+python -m pytest tests/ backend/tests/ -q   # 13 tests: seguridad, HMAC, layout UI, E2E API
+python test_e2e_api.py                       # register → login → assert saldo == 60
+```
+
+---
+
+## 📁 Estructura
 
 ```text
-credits = ceil(duración_en_minutos × CREDITS_PER_MINUTE)
+├── main.py                 # Entrada del cliente desktop
+├── core/                   # backend_client, transcripción local/Groq, audio
+├── ui/                     # MainWindow (sidebar + dashboard CustomTkinter)
+├── backend/                # FastAPI: auth, credits, proxy_groq, payments, webhooks
+│   ├── database/           # SQLAlchemy + modelos + get_db
+│   ├── alembic/            # Migraciones versionadas
+│   └── tests/              # Tests de seguridad (429, logout/401)
+├── assets/                 # Logos y fondos (CTkImage)
+├── build_app.spec          # Release PyInstaller → dist/
+├── render.yaml / Procfile  # Despliegue Render / Railway
+└── AUDIT_REPORT.md         # Auditoría de seguridad y UX
 ```
 
-Por defecto:
-
-- `CREDITS_PER_MINUTE=1`
-- saldo inicial mock: `60` créditos
-- paquete `starter`: 60 créditos
-- paquete `pro`: 180 créditos
-
-Estos valores están en memoria para pruebas locales. **La persistencia real todavía debe migrarse a PostgreSQL/Supabase** antes de un lanzamiento comercial.
-
-## Seguridad
-
-La arquitectura separa secretos del cliente:
-
-- El desktop **no usa** `GROQ_API_KEY`.
-- El backend utiliza `GROQ_API_KEY_SERVER`.
-- El webhook de Mercado Pago valida `x-signature` mediante HMAC-SHA256.
-- Los `payment_id` ya procesados se ignoran de forma idempotente.
-- El webhook también comprueba que importe y moneda coincidan con el paquete esperado.
-- Los archivos subidos al proxy se almacenan temporalmente y se eliminan al terminar.
-- El checkpoint de Groq conserva fragmentos procesados para reanudar una transcripción interrumpida.
-
-## Pruebas rápidas
-
-Las pruebas añadidas para esta arquitectura pueden ejecutarse con la librería estándar de Python:
-
-```bat
-python -m unittest tests.test_groq_transcriber tests.test_backend_security
-```
-
-La prueba de `test_transcriber.py` existente del proyecto valida el motor local y puede descargar/cargar el modelo Whisper; no es la prueba rápida recomendada para comprobar únicamente la arquitectura Online.
-
-## Mercado Pago en local
-
-Para que Mercado Pago pueda llamar al webhook, el backend debe disponer de una URL accesible desde Internet. En desarrollo local puedes utilizar un túnel HTTPS y configurar esa URL en:
-
-```env
-MP_WEBHOOK_URL=https://tu-url-publica/webhooks/mercadopago
-```
-
-En producción utiliza una URL HTTPS estable y protege los secretos exclusivamente mediante variables de entorno o un gestor de secretos.
-
-## Roadmap
-
-### 1. Transición a SaaS
-
-- Migrar autenticación mock a cuentas reales.
-- Sustituir `CreditStore` en memoria por PostgreSQL/Supabase.
-- Registrar consumos, compras, reembolsos e historial de transcripciones.
-- Añadir observabilidad, rate limiting y controles de abuso.
-- Separar configuración de desarrollo, staging y producción.
-
-### 2. Portal web de Mercado Pago
-
-- Crear el portal web definitivo para compra y gestión de créditos.
-- Integrar Checkout Pro y estados de pago en una interfaz web.
-- Mostrar paquetes, saldo e historial.
-- Completar el ciclo de retorno de compra y recuperación de sesión.
-
-### 3. Sistema de cuentas de usuario
-
-- Registro, login y recuperación de cuenta.
-- Perfil y gestión de sesión.
-- Sincronización de créditos entre escritorio y portal web.
-- Historial de transcripciones y consumo.
-- Soporte para planes gratuitos y de pago.
-
-## Estado actual
-
-El repositorio ya contiene la separación Desktop/Backend, proxy de Groq, créditos, Checkout Pro, webhook seguro, reintentos, paralelismo y checkpointing.
-
-El siguiente salto para producción comercial es **persistencia real + cuentas reales + portal web + despliegue seguro del backend**.
+**La API key de Groq vive solo en el servidor (`GROQ_API_KEY_SERVER`). El cliente jamás la recibe.** 🔒
