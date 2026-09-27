@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import requests
+
+#: URL de produccion: solo se usa cuando la app corre empaquetada (.exe)
+#: y no hay TRANSCRIBER_BACKEND_URL definida. Reemplazar al desplegar.
+PRODUCTION_BACKEND_URL = "https://API_PRODUCCION_REEMPLAZAR.com"
 
 
 @dataclass
@@ -38,7 +43,12 @@ class BackendClient:
     ) -> None:
         self.base_url = (
             base_url
-            or os.getenv("TRANSCRIBER_BACKEND_URL", "http://localhost:8000")
+            or os.getenv("TRANSCRIBER_BACKEND_URL", "")
+            or (
+                PRODUCTION_BACKEND_URL
+                if getattr(sys, "frozen", False)
+                else "http://localhost:8000"
+            )
         ).strip().rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()

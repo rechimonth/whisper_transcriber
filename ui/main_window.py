@@ -76,9 +76,13 @@ class MainWindow(_BaseWindow):
         self.grid_columnconfigure(0, minsize=self.SIDEBAR_WIDTH)
         self.grid_columnconfigure(1, weight=1)
 
-        self.assets_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "assets",
+        self.assets_dir = (
+            os.path.join(sys._MEIPASS, "assets")  # type: ignore[attr-defined]
+            if getattr(sys, "frozen", False)
+            else os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "assets",
+            )
         )
         self._images: list = []  # retiene CTkImage (evita garbage collector)
 
